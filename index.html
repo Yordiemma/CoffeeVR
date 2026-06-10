@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Terrain WebXR Explorer</title>
+    <title>Kaldi Coffee Trail</title>
 
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 
@@ -228,7 +228,10 @@
 
         onPointerDown: function (event) {
           if (event.button !== undefined && event.button !== 0) return;
-          if (event.target.closest && event.target.closest("#hud, #loading")) {
+          if (
+            event.target.closest &&
+            event.target.closest("#hud, #loading, #introOverlay")
+          ) {
             return;
           }
 
@@ -278,7 +281,10 @@
         },
 
         onWheel: function (event) {
-          if (event.target.closest && event.target.closest("#hud, #loading"))
+          if (
+            event.target.closest &&
+            event.target.closest("#hud, #loading, #introOverlay")
+          )
             return;
           event.preventDefault();
           this.cameraDistance = THREE.MathUtils.clamp(
@@ -391,7 +397,7 @@
           }
         },
 
-        tick: function () {
+        tick: function (time, delta) {
           if (!this.meshes.length) return;
 
           const position = this.el.object3D.position;
@@ -584,7 +590,9 @@
         schema: {
           idle: { type: "selector" },
           walk: { type: "selector" },
+          avatar: { type: "selector" },
           moveThreshold: { default: 0.00001 },
+          turnSpeed: { default: 16 },
         },
 
         init: function () {
@@ -594,10 +602,12 @@
           if (this.data.walk) this.data.walk.setAttribute("visible", false);
         },
 
-        tick: function () {
-          const moved =
-            this.el.object3D.position.distanceToSquared(this.lastPos) >
-            this.data.moveThreshold;
+        tick: function (time, delta) {
+          const position = this.el.object3D.position;
+          const moveX = position.x - this.lastPos.x;
+          const moveZ = position.z - this.lastPos.z;
+          const moved = moveX * moveX + moveZ * moveZ > this.data.moveThreshold;
+          const wasWalking = this.isWalking;
 
           if (moved !== this.isWalking) {
             this.isWalking = moved;
@@ -605,7 +615,24 @@
             if (this.data.walk) this.data.walk.setAttribute("visible", moved);
           }
 
-          this.lastPos.copy(this.el.object3D.position);
+          if (moved && this.data.avatar) {
+            const avatar = this.data.avatar.object3D;
+            const targetYaw =
+              Math.atan2(moveX, moveZ) - this.el.object3D.rotation.y;
+            const turn = THREE.MathUtils.euclideanModulo(
+              targetYaw - avatar.rotation.y + Math.PI,
+              Math.PI * 2,
+            ) - Math.PI;
+            const deltaSeconds = Math.min((delta || 16) / 1000, 0.05);
+            if (!wasWalking) {
+              avatar.rotation.y = targetYaw;
+            } else {
+              avatar.rotation.y +=
+                turn * Math.min(this.data.turnSpeed * deltaSeconds, 1);
+            }
+          }
+
+          this.lastPos.copy(position);
         },
       });
 
@@ -905,67 +932,387 @@
     </script>
 
     <style>
+      :root {
+        color-scheme: dark;
+        --deep-green: #0d1812;
+        --leaf-green: #2f7a55;
+        --mint: #a8e6bd;
+        --cream: #f4f7ee;
+        --amber: #f0c15a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
         overflow: hidden;
-        background: #87ceeb;
-        font-family: Arial, sans-serif;
+        background: var(--deep-green);
+        color: var(--cream);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      #introOverlay {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        padding: 32px;
+        overflow: auto;
+        background:
+          linear-gradient(
+            90deg,
+            rgba(7, 13, 10, 0.96) 0%,
+            rgba(14, 33, 24, 0.88) 52%,
+            rgba(9, 16, 12, 0.66) 100%
+          ),
+          #0d1812;
+        color: var(--cream);
+        transition:
+          opacity 260ms ease,
+          visibility 260ms ease;
+      }
+
+      #introOverlay.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+        visibility: hidden;
+      }
+
+      .intro-shell {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+        gap: 24px;
+        align-items: end;
+      }
+
+      .intro-kicker {
+        margin: 0 0 14px;
+        color: var(--mint);
+        font-size: 0.9rem;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .intro-hero h1 {
+        max-width: 700px;
+        margin: 0;
+        font-size: 3.6rem;
+        line-height: 1.02;
+        letter-spacing: 0;
+      }
+
+      .intro-copy {
+        max-width: 650px;
+        margin: 20px 0 0;
+        color: #dce9de;
+        font-size: 1.1rem;
+        line-height: 1.65;
+      }
+
+      .intro-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin-top: 28px;
+      }
+
+      #startExperience {
+        min-height: 48px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--amber);
+        color: #102015;
+        cursor: pointer;
+        font-weight: 800;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      #startExperience:hover:not(:disabled),
+      #startExperience:focus-visible:not(:disabled) {
+        background: #ffd36f;
+        outline: 3px solid rgba(168, 230, 189, 0.46);
+        outline-offset: 3px;
+      }
+
+      #startExperience:disabled {
+        cursor: wait;
+        opacity: 0.58;
+        box-shadow: none;
       }
 
       #loading {
-        position: fixed;
-        inset: 0;
-        z-index: 10;
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        justify-content: center;
-        background: #101810;
-        color: white;
+        min-height: 36px;
+        padding: 0 12px;
+        border: 1px solid rgba(244, 247, 238, 0.18);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #e8f5ea;
+        font-size: 0.9rem;
+      }
+
+      #loading.is-ready {
+        border-color: rgba(168, 230, 189, 0.46);
+        color: #ccf4d8;
+      }
+
+      .intro-guide {
+        border: 1px solid rgba(244, 247, 238, 0.16);
+        border-radius: 8px;
+        background: rgba(6, 17, 12, 0.66);
+        padding: 22px;
+        box-shadow: 0 18px 52px rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(16px);
+      }
+
+      .intro-guide h2 {
+        margin: 0;
+        font-size: 1.35rem;
+        line-height: 1.2;
+        letter-spacing: 0;
+      }
+
+      .intro-steps {
+        display: grid;
+        gap: 12px;
+        margin: 18px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .intro-steps li {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        color: #d7e7db;
+        line-height: 1.4;
+      }
+
+      .step-number {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: rgba(168, 230, 189, 0.14);
+        color: var(--mint);
+        font-weight: 800;
+      }
+
+      .intro-controls {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .control-chip {
+        min-height: 72px;
+        padding: 10px;
+        border: 1px solid rgba(244, 247, 238, 0.13);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .control-chip strong,
+      .control-chip span {
+        display: block;
+      }
+
+      .control-chip strong {
+        color: #ffffff;
+        font-size: 0.86rem;
+      }
+
+      .control-chip span {
+        margin-top: 4px;
+        color: #c8d9cc;
+        font-size: 0.84rem;
+        line-height: 1.35;
       }
 
       #hud {
         position: fixed;
         left: 12px;
         bottom: 12px;
-        z-index: 5;
+        z-index: 8;
+        max-width: min(520px, calc(100vw - 24px));
         padding: 10px 12px;
         border-radius: 8px;
         background: rgba(0, 0, 0, 0.62);
         color: white;
         font-size: 14px;
+        line-height: 1.4;
+        opacity: 0;
         pointer-events: none;
+        transform: translateY(8px);
+        transition:
+          opacity 220ms ease,
+          transform 220ms ease;
+      }
+
+      body.experience-started #hud {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 760px) {
+        #introOverlay {
+          align-items: flex-start;
+          padding: 20px;
+        }
+
+        .intro-shell {
+          grid-template-columns: 1fr;
+          gap: 18px;
+          padding: 28px 0;
+        }
+
+        .intro-hero h1 {
+          font-size: 2.45rem;
+        }
+
+        .intro-copy {
+          font-size: 1rem;
+        }
+
+        .intro-guide {
+          padding: 18px;
+        }
+
+        .intro-controls {
+          grid-template-columns: 1fr;
+        }
+
+        #hud {
+          left: 10px;
+          right: 10px;
+          bottom: 10px;
+          max-width: none;
+          font-size: 13px;
+        }
+      }
+
+      @media (max-height: 700px) and (min-width: 761px) {
+        #introOverlay {
+          align-items: flex-start;
+        }
+
+        .intro-shell {
+          padding: 24px 0;
+        }
+
+        .intro-hero h1 {
+          font-size: 2.8rem;
+        }
+
+        .intro-copy {
+          font-size: 1rem;
+        }
       }
     </style>
   </head>
 
   <body>
-    <div id="loading">Loading terrain...</div>
-    <div id="hud">
-      Move the mouse/camera to start goat.mp3. After the story finishes, walk to
-      guide the goat toward the coffee tree.
+    <div
+      id="introOverlay"
+      role="dialog"
+      aria-labelledby="introTitle"
+      aria-describedby="introDescription"
+    >
+      <div class="intro-shell">
+        <section class="intro-hero" aria-label="Experience introduction">
+          <p class="intro-kicker">CoffeeVR Story Experience</p>
+          <h1 id="introTitle">Kaldi's Coffee Trail</h1>
+          <p id="introDescription" class="intro-copy">
+            Step into a hillside coffee farm and follow a short story inspired
+            by Kaldi, the curious goats, and the discovery of coffee. Listen to
+            the narration, explore the terrain, and guide the goat toward the
+            coffee tree.
+          </p>
+          <div class="intro-actions">
+            <button id="startExperience" type="button" disabled>
+              Loading experience
+            </button>
+            <span id="loading" aria-live="polite">Loading terrain...</span>
+          </div>
+        </section>
+
+        <aside class="intro-guide" aria-label="What to do">
+          <h2>What To Do</h2>
+          <ol class="intro-steps">
+            <li>
+              <span class="step-number">1</span>
+              <span>Start the experience and let the opening story play.</span>
+            </li>
+            <li>
+              <span class="step-number">2</span>
+              <span>Look around the farm and find the guide goat.</span>
+            </li>
+            <li>
+              <span class="step-number">3</span>
+              <span>Walk with the goat toward the coffee tree.</span>
+            </li>
+            <li>
+              <span class="step-number">4</span>
+              <span>Reach the tree to hear the discovery moment.</span>
+            </li>
+          </ol>
+
+          <div class="intro-controls" aria-label="Controls">
+            <div class="control-chip">
+              <strong>Look</strong>
+              <span>Move the mouse or drag on touch.</span>
+            </div>
+            <div class="control-chip">
+              <strong>Walk</strong>
+              <span>Use W A S D or the arrow keys.</span>
+            </div>
+            <div class="control-chip">
+              <strong>Zoom</strong>
+              <span>Scroll to move the camera closer.</span>
+            </div>
+            <div class="control-chip">
+              <strong>VR</strong>
+              <span>Use the VR button when your headset is ready.</span>
+            </div>
+          </div>
+        </aside>
+      </div>
     </div>
 
+    <div id="hud">
+      Listen to the opening story, then walk with the guide goat toward the
+      coffee tree.
+    </div>
     <a-scene
       id="scene"
       background="color: #87CEEB"
       loading-screen="enabled: false"
-      renderer="antialias: true; colorManagement: true; precision: highp; logarithmicDepthBuffer: true"
+      renderer="antialias: false; colorManagement: true; precision: mediump"
       vr-mode-ui="enabled: true"
       world-audio-triggers="goatSound: ./audio/goat.mp3"
     >
       <a-assets timeout="120000">
-        <a-asset-item
-          id="terrainAsset"
-          src="./assets/terrain.glb"
-        ></a-asset-item>
-        <a-asset-item
-          id="houseAsset"
-          src="./assets/Housetexture.glb"
-        ></a-asset-item>
-        <a-asset-item
-          id="coffeeTreeAsset"
-          src="./assets/coffeeTree.glb"
-        ></a-asset-item>
+        <a-asset-item id="terrainAsset" src="./assets/terrain.glb"></a-asset-item>
+        <a-asset-item id="houseAsset" src="./assets/Housetexture.glb"></a-asset-item>
+        <a-asset-item id="coffeeTreeAsset" src="./assets/coffeeTree.glb"></a-asset-item>
         <a-asset-item id="goatAsset" src="./assets/goat.glb"></a-asset-item>
         <a-asset-item id="idleAsset" src="./assets/idle.glb"></a-asset-item>
         <a-asset-item id="walkAsset" src="./assets/walk.glb"></a-asset-item>
@@ -1004,15 +1351,6 @@
       ></a-gltf-model>
 
       <a-gltf-model
-        id="coffeeTreeTwo"
-        src="#coffeeTreeAsset"
-        position="-4 0 9"
-        rotation="0 35 0"
-        scale="2.6 2.6 2.6"
-        place-on-terrain="terrain: #terrainModel"
-      ></a-gltf-model>
-
-      <a-gltf-model
         id="goatOne"
         src="#goatAsset"
         position="-10.5 0 -11.8"
@@ -1020,16 +1358,6 @@
         scale="0.8 0.8 0.8"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
         goat-idle="phase: 0.2"
-      ></a-gltf-model>
-
-      <a-gltf-model
-        id="goatTwo"
-        src="#goatAsset"
-        position="-6.5 0 -17.2"
-        rotation="0 -45 0"
-        scale="0.8 0.8 0.8"
-        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
-        goat-idle="phase: 1.6; swayDegrees: 2.4"
       ></a-gltf-model>
 
       <a-gltf-model
@@ -1067,7 +1395,7 @@
         position="-6.2 0 -10.8"
         smooth-explorer-controls
         terrain-ground-follow="terrain: #terrainModel"
-        player-state-models="idle: #kaldiIdleModel; walk: #kaldiWalkModel"
+        player-state-models="idle: #kaldiIdleModel; walk: #kaldiWalkModel; avatar: #kaldiAvatar"
       >
         <a-entity
           id="kaldiAvatar"
@@ -1106,11 +1434,44 @@
     </a-scene>
 
     <script>
+      const scene = document.querySelector("#scene");
+      const introOverlay = document.querySelector("#introOverlay");
+      const startButton = document.querySelector("#startExperience");
       const loading = document.querySelector("#loading");
       const terrain = document.querySelector("#terrainModel");
+      let terrainReady = false;
 
-      terrain.addEventListener("model-loaded", () => {
-        loading.style.display = "none";
+      const markTerrainReady = () => {
+        terrainReady = true;
+        loading.textContent = "Ready to explore";
+        loading.classList.add("is-ready");
+        startButton.disabled = false;
+        startButton.textContent = "Start experience";
+      };
+
+      if (terrain.getObject3D("mesh")) {
+        markTerrainReady();
+      } else {
+        terrain.addEventListener("model-loaded", markTerrainReady, {
+          once: true,
+        });
+      }
+
+      window.setTimeout(() => {
+        if (!terrainReady) {
+          loading.textContent = "Loading large 3D models...";
+        }
+      }, 12000);
+
+      startButton.addEventListener("click", () => {
+        if (!terrainReady) return;
+
+        document.body.classList.add("experience-started");
+        introOverlay.classList.add("is-hidden");
+        startButton.blur();
+
+        const audioTriggers = scene.components["world-audio-triggers"];
+        if (audioTriggers) audioTriggers.tryStartGoatAudio();
       });
     </script>
   </body>
