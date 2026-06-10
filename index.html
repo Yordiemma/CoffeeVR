@@ -1,0 +1,1117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Terrain WebXR Explorer</title>
+
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+    <script>
+      AFRAME.registerComponent("align-terrain-ground", {
+        schema: {
+          sampleX: { default: 0 },
+          sampleZ: { default: 18 },
+          desiredY: { default: 0 },
+          fallbackLift: { default: 40 },
+          rayStart: { default: 120 },
+          rayLength: { default: 260 },
+          minNormalY: { default: 0.2 },
+        },
+
+        init: function () {
+          this.raycaster = new THREE.Raycaster();
+          this.down = new THREE.Vector3(0, -1, 0);
+          this.normalMatrix = new THREE.Matrix3();
+
+          if (this.el.getObject3D("mesh")) {
+            this.align();
+            return;
+          }
+
+          this.el.addEventListener("model-loaded", () => this.align(), {
+            once: true,
+          });
+        },
+
+        align: function () {
+          const mesh = this.el.getObject3D("mesh");
+          if (!mesh) return;
+
+          mesh.updateMatrixWorld(true);
+          const meshes = [];
+          mesh.traverse((node) => {
+            if (node.isMesh) meshes.push(node);
+          });
+
+          const origin = new THREE.Vector3(
+            this.data.sampleX,
+            this.data.rayStart,
+            this.data.sampleZ,
+          );
+          this.raycaster.set(origin, this.down);
+          this.raycaster.far = this.data.rayLength;
+
+          const hits = this.raycaster.intersectObjects(meshes, false);
+          const hit = hits.find((candidate) => this.isGroundHit(candidate));
+          const lift = hit
+            ? this.data.desiredY - hit.point.y
+            : this.data.fallbackLift;
+
+          this.el.object3D.position.y += lift;
+          this.el.object3D.updateMatrixWorld(true);
+          this.el.setAttribute("position", {
+            x: Number(this.el.object3D.position.x.toFixed(3)),
+            y: Number(this.el.object3D.position.y.toFixed(3)),
+            z: Number(this.el.object3D.position.z.toFixed(3)),
+          });
+          this.el.setAttribute("data-ground-ready", "true");
+          this.el.emit("terrain-ground-ready");
+        },
+
+        isGroundHit: function (hit) {
+          if (!hit.face) return true;
+
+          this.normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+          const normal = hit.face.normal
+            .clone()
+            .applyMatrix3(this.normalMatrix)
+            .normalize();
+          return normal.y >= this.data.minNormalY;
+        },
+      });
+
+      AFRAME.registerComponent("smooth-explorer-controls", {
+        schema: {
+          speed: { default: 3.4 },
+          acceleration: { default: 10 },
+          damping: { default: 7 },
+          lookSpeed: { default: 0.0025 },
+          minPitch: { default: -35 },
+          maxPitch: { default: 8 },
+          zoomSpeed: { default: 0.006 },
+          minZoom: { default: 2.8 },
+          maxZoom: { default: 12 },
+        },
+
+        init: function () {
+          this.keys = new Set();
+          this.velocity = new THREE.Vector3();
+          this.forward = new THREE.Vector3();
+          this.right = new THREE.Vector3();
+          this.input = new THREE.Vector2();
+          this.camera = document.querySelector("#playerCamera");
+          this.yaw = 0;
+          this.pitch = THREE.MathUtils.degToRad(-12);
+          this.dragging = false;
+          this.pointerLocked = false;
+          this.canvas = null;
+          this.inputAttached = false;
+          this.attachAttempts = 0;
+          this.cameraDistance = 6;
+          this.pointer = { x: 0, y: 0 };
+
+          this.onKeyDown = (event) => this.keys.add(event.code);
+          this.onKeyUp = (event) => this.keys.delete(event.code);
+          this.onPointerDown = this.onPointerDown.bind(this);
+          this.onPointerMove = this.onPointerMove.bind(this);
+          this.onPointerUp = this.onPointerUp.bind(this);
+          this.onMouseMove = this.onMouseMove.bind(this);
+          this.onWheel = this.onWheel.bind(this);
+          this.onPointerLockChange = this.onPointerLockChange.bind(this);
+          this.attachInputHandlers = this.attachInputHandlers.bind(this);
+
+          window.addEventListener("keydown", this.onKeyDown);
+          window.addEventListener("keyup", this.onKeyUp);
+          window.addEventListener("blur", () => this.keys.clear());
+          document.addEventListener(
+            "pointerlockchange",
+            this.onPointerLockChange,
+          );
+
+          document.addEventListener("mousedown", this.onPointerDown);
+          document.addEventListener("mousemove", this.onMouseMove);
+          document.addEventListener("pointermove", this.onPointerMove);
+          document.addEventListener("pointerup", this.onPointerUp);
+          document.addEventListener("wheel", this.onWheel, { passive: false });
+
+          this.el.sceneEl.addEventListener(
+            "render-target-loaded",
+            this.attachInputHandlers,
+          );
+          this.el.sceneEl.addEventListener("loaded", this.attachInputHandlers);
+          this.attachInputHandlers();
+        },
+
+        remove: function () {
+          window.removeEventListener("keydown", this.onKeyDown);
+          window.removeEventListener("keyup", this.onKeyUp);
+          document.removeEventListener("mousedown", this.onPointerDown);
+          document.removeEventListener("mousemove", this.onMouseMove);
+          document.removeEventListener("pointermove", this.onPointerMove);
+          document.removeEventListener("pointerup", this.onPointerUp);
+          document.removeEventListener("wheel", this.onWheel);
+          document.removeEventListener(
+            "pointerlockchange",
+            this.onPointerLockChange,
+          );
+          this.el.sceneEl.removeEventListener(
+            "render-target-loaded",
+            this.attachInputHandlers,
+          );
+          this.el.sceneEl.removeEventListener(
+            "loaded",
+            this.attachInputHandlers,
+          );
+          if (this.el.sceneEl.canvas) {
+            this.el.sceneEl.canvas.removeEventListener(
+              "pointerdown",
+              this.onPointerDown,
+            );
+            this.el.sceneEl.canvas.removeEventListener("wheel", this.onWheel);
+          }
+        },
+
+        attachInputHandlers: function () {
+          if (this.inputAttached) return;
+
+          const canvas = this.el.sceneEl.canvas;
+          if (!canvas) {
+            this.attachAttempts += 1;
+            if (this.attachAttempts < 120) {
+              window.setTimeout(this.attachInputHandlers, 100);
+            }
+            return;
+          }
+
+          this.canvas = canvas;
+          this.inputAttached = true;
+          canvas.style.touchAction = "none";
+          canvas.addEventListener("pointerdown", this.onPointerDown);
+          canvas.addEventListener("wheel", this.onWheel, { passive: false });
+          this.updateView();
+        },
+
+        tick: function (time, delta) {
+          const dt = Math.min(delta / 1000, 0.05);
+          this.readInput();
+          this.updateView();
+
+          if (!this.input.lengthSq()) {
+            this.velocity.lerp(
+              new THREE.Vector3(0, 0, 0),
+              this.data.damping * dt,
+            );
+            this.el.object3D.position.addScaledVector(this.velocity, dt);
+            return;
+          }
+
+          this.camera.object3D.getWorldDirection(this.forward);
+          this.forward.multiplyScalar(-1);
+          this.forward.y = 0;
+          this.forward.normalize();
+          this.right.set(-this.forward.z, 0, this.forward.x);
+
+          const targetVelocity = new THREE.Vector3();
+          targetVelocity.addScaledVector(
+            this.forward,
+            this.input.y * this.data.speed,
+          );
+          targetVelocity.addScaledVector(
+            this.right,
+            this.input.x * this.data.speed,
+          );
+
+          this.velocity.lerp(targetVelocity, this.data.acceleration * dt);
+          this.el.object3D.position.addScaledVector(this.velocity, dt);
+        },
+
+        onPointerDown: function (event) {
+          if (event.button !== undefined && event.button !== 0) return;
+          if (event.target.closest && event.target.closest("#hud, #loading")) {
+            return;
+          }
+
+          this.dragging = true;
+          this.pointer.x = event.clientX;
+          this.pointer.y = event.clientY;
+          if (
+            (!event.pointerType || event.pointerType === "mouse") &&
+            this.canvas &&
+            this.canvas.requestPointerLock &&
+            document.pointerLockElement !== this.canvas
+          ) {
+            this.canvas.requestPointerLock();
+          }
+        },
+
+        onPointerMove: function (event) {
+          if (event.pointerType === "mouse") return;
+
+          let dx = 0;
+          let dy = 0;
+
+          if (!this.dragging) return;
+          dx = event.clientX - this.pointer.x;
+          dy = event.clientY - this.pointer.y;
+          this.pointer.x = event.clientX;
+          this.pointer.y = event.clientY;
+          this.applyLookDelta(dx, dy);
+        },
+
+        onMouseMove: function (event) {
+          let dx = 0;
+          let dy = 0;
+
+          if (this.pointerLocked) {
+            dx = event.movementX || 0;
+            dy = event.movementY || 0;
+          } else {
+            if (!this.dragging) return;
+            dx = event.clientX - this.pointer.x;
+            dy = event.clientY - this.pointer.y;
+            this.pointer.x = event.clientX;
+            this.pointer.y = event.clientY;
+          }
+
+          this.applyLookDelta(dx, dy);
+        },
+
+        onWheel: function (event) {
+          if (event.target.closest && event.target.closest("#hud, #loading"))
+            return;
+          event.preventDefault();
+          this.cameraDistance = THREE.MathUtils.clamp(
+            this.cameraDistance + event.deltaY * this.data.zoomSpeed,
+            this.data.minZoom,
+            this.data.maxZoom,
+          );
+          this.updateView();
+        },
+
+        applyLookDelta: function (dx, dy) {
+          this.yaw -= dx * this.data.lookSpeed;
+          this.pitch -= dy * this.data.lookSpeed;
+          this.pitch = THREE.MathUtils.clamp(
+            this.pitch,
+            THREE.MathUtils.degToRad(this.data.minPitch),
+            THREE.MathUtils.degToRad(this.data.maxPitch),
+          );
+          this.updateView();
+        },
+
+        onPointerUp: function () {
+          if (!this.pointerLocked) this.dragging = false;
+        },
+
+        onPointerLockChange: function () {
+          this.pointerLocked = document.pointerLockElement === this.canvas;
+          if (!this.pointerLocked) this.dragging = false;
+        },
+
+        updateView: function () {
+          this.el.object3D.rotation.y = this.yaw;
+          if (this.camera) {
+            this.camera.object3D.position.z = this.cameraDistance;
+            this.camera.object3D.rotation.set(this.pitch, 0, 0);
+          }
+        },
+
+        readInput: function () {
+          this.input.set(0, 0);
+
+          if (this.keys.has("KeyW") || this.keys.has("ArrowUp"))
+            this.input.y += 1;
+          if (this.keys.has("KeyS") || this.keys.has("ArrowDown"))
+            this.input.y -= 1;
+          if (this.keys.has("KeyD") || this.keys.has("ArrowRight"))
+            this.input.x += 1;
+          if (this.keys.has("KeyA") || this.keys.has("ArrowLeft"))
+            this.input.x -= 1;
+
+          if (this.input.lengthSq() > 1) this.input.normalize();
+        },
+      });
+
+      AFRAME.registerComponent("terrain-ground-follow", {
+        schema: {
+          terrain: { type: "selector" },
+          minY: { default: -80 },
+          maxY: { default: 120 },
+          rayUp: { default: 180 },
+          rayDown: { default: 360 },
+          footOffset: { default: 0.06 },
+          minNormalY: { default: -0.35 },
+        },
+
+        init: function () {
+          this.meshes = [];
+          this.raycaster = new THREE.Raycaster();
+          this.down = new THREE.Vector3(0, -1, 0);
+          this.normalMatrix = new THREE.Matrix3();
+          this.lastGroundY = 0;
+
+          if (!this.data.terrain) return;
+
+          const waitForGround = () => {
+            if (this.data.terrain.hasAttribute("data-ground-ready")) {
+              this.collectTerrainMeshes();
+            } else {
+              this.data.terrain.addEventListener(
+                "terrain-ground-ready",
+                () => this.collectTerrainMeshes(),
+                { once: true },
+              );
+            }
+          };
+
+          if (this.data.terrain.getObject3D("mesh")) {
+            waitForGround();
+          } else {
+            this.data.terrain.addEventListener("model-loaded", waitForGround, {
+              once: true,
+            });
+          }
+        },
+
+        collectTerrainMeshes: function () {
+          const terrain = this.data.terrain.getObject3D("mesh");
+          if (!terrain) return;
+
+          terrain.updateMatrixWorld(true);
+          this.meshes = [];
+          terrain.traverse((node) => {
+            if (node.isMesh) this.meshes.push(node);
+          });
+
+          const groundY = this.findGroundY(this.el.object3D.position);
+          if (groundY !== null) {
+            this.lastGroundY = groundY;
+            this.el.object3D.position.y = groundY + this.data.footOffset;
+          }
+        },
+
+        tick: function () {
+          if (!this.meshes.length) return;
+
+          const position = this.el.object3D.position;
+          const groundY = this.findGroundY(position);
+          if (groundY === null) {
+            position.y = this.lastGroundY;
+            return;
+          }
+
+          this.lastGroundY = groundY;
+          position.y = groundY + this.data.footOffset;
+        },
+
+        findGroundY: function (position) {
+          this.data.terrain.object3D.updateMatrixWorld(true);
+          this.raycaster.set(
+            new THREE.Vector3(
+              position.x,
+              position.y + this.data.rayUp,
+              position.z,
+            ),
+            this.down,
+          );
+          this.raycaster.far = this.data.rayDown;
+
+          const hits = this.raycaster.intersectObjects(this.meshes, false);
+          const hit =
+            hits.find((candidate) => this.isWalkable(candidate)) || hits[0];
+          if (!hit) return null;
+
+          return THREE.MathUtils.clamp(
+            hit.point.y,
+            this.data.minY,
+            this.data.maxY,
+          );
+        },
+
+        isWalkable: function (hit) {
+          if (!hit.face) return true;
+
+          this.normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+          const normal = hit.face.normal
+            .clone()
+            .applyMatrix3(this.normalMatrix)
+            .normalize();
+          return normal.y > this.data.minNormalY;
+        },
+      });
+
+      AFRAME.registerComponent("place-on-terrain", {
+        schema: {
+          terrain: { type: "selector" },
+          yOffset: { default: 0 },
+          fallbackY: { default: 0 },
+          maxSnapY: { default: 80 },
+          rayUp: { default: 180 },
+          rayDown: { default: 360 },
+          minNormalY: { default: -0.35 },
+        },
+
+        init: function () {
+          this.raycaster = new THREE.Raycaster();
+          this.down = new THREE.Vector3(0, -1, 0);
+          this.normalMatrix = new THREE.Matrix3();
+          this.meshes = [];
+
+          const prepare = () => {
+            this.collectTerrainMeshes();
+            this.snapWhenReady();
+          };
+
+          if (!this.data.terrain) return;
+
+          const waitForGround = () => {
+            if (this.data.terrain.hasAttribute("data-ground-ready")) {
+              prepare();
+            } else {
+              this.data.terrain.addEventListener(
+                "terrain-ground-ready",
+                prepare,
+                {
+                  once: true,
+                },
+              );
+            }
+          };
+
+          if (this.data.terrain.getObject3D("mesh")) {
+            waitForGround();
+          } else {
+            this.data.terrain.addEventListener("model-loaded", waitForGround, {
+              once: true,
+            });
+          }
+        },
+
+        collectTerrainMeshes: function () {
+          this.meshes = [];
+          this.data.terrain.getObject3D("mesh").traverse((node) => {
+            if (node.isMesh) this.meshes.push(node);
+          });
+        },
+
+        snapWhenReady: function () {
+          if (this.el.getObject3D("mesh")) {
+            this.snap();
+            return;
+          }
+          this.el.addEventListener("model-loaded", () => this.snap(), {
+            once: true,
+          });
+        },
+
+        snap: function () {
+          const position = this.el.object3D.position;
+          this.data.terrain.object3D.updateMatrixWorld(true);
+          this.el.object3D.updateMatrixWorld(true);
+          this.raycaster.set(
+            new THREE.Vector3(
+              position.x,
+              position.y + this.data.rayUp,
+              position.z,
+            ),
+            this.down,
+          );
+          this.raycaster.far = this.data.rayDown;
+          const hits = this.raycaster.intersectObjects(this.meshes, false);
+          const hit =
+            hits.find((candidate) => this.isGroundHit(candidate)) ||
+            hits.find((candidate) => candidate.point.y <= this.data.maxSnapY);
+          if (!hit) {
+            position.y = this.data.fallbackY;
+            this.writePosition();
+            return;
+          }
+
+          const objectBox = new THREE.Box3().setFromObject(this.el.object3D);
+          const lift = hit.point.y - objectBox.min.y + this.data.yOffset;
+          position.y += lift;
+          this.el.object3D.updateMatrixWorld(true);
+          this.writePosition();
+        },
+
+        isGroundHit: function (hit) {
+          if (hit.point.y > this.data.maxSnapY) return false;
+          if (!hit.face) return true;
+
+          this.normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+          const normal = hit.face.normal
+            .clone()
+            .applyMatrix3(this.normalMatrix)
+            .normalize();
+          return normal.y >= this.data.minNormalY;
+        },
+
+        writePosition: function () {
+          const position = this.el.object3D.position;
+          this.el.setAttribute("position", {
+            x: Number(position.x.toFixed(3)),
+            y: Number(position.y.toFixed(3)),
+            z: Number(position.z.toFixed(3)),
+          });
+        },
+      });
+
+      AFRAME.registerComponent("loop-first-animation", {
+        init: function () {
+          this.mixer = null;
+          this.action = null;
+
+          this.el.addEventListener("model-loaded", () => {
+            const model = this.el.getObject3D("mesh");
+            if (!model) return;
+
+            const clips = model.animations || [];
+            if (!clips.length) return;
+
+            this.mixer = new THREE.AnimationMixer(model);
+            this.action = this.mixer.clipAction(clips[0]);
+            this.action.reset().play();
+          });
+        },
+
+        tick: function (time, delta) {
+          if (this.mixer) this.mixer.update(delta / 1000);
+        },
+      });
+
+      AFRAME.registerComponent("player-state-models", {
+        schema: {
+          idle: { type: "selector" },
+          walk: { type: "selector" },
+          moveThreshold: { default: 0.00001 },
+        },
+
+        init: function () {
+          this.lastPos = new THREE.Vector3();
+          this.isWalking = false;
+          if (this.data.idle) this.data.idle.setAttribute("visible", true);
+          if (this.data.walk) this.data.walk.setAttribute("visible", false);
+        },
+
+        tick: function () {
+          const moved =
+            this.el.object3D.position.distanceToSquared(this.lastPos) >
+            this.data.moveThreshold;
+
+          if (moved !== this.isWalking) {
+            this.isWalking = moved;
+            if (this.data.idle) this.data.idle.setAttribute("visible", !moved);
+            if (this.data.walk) this.data.walk.setAttribute("visible", moved);
+          }
+
+          this.lastPos.copy(this.el.object3D.position);
+        },
+      });
+
+      AFRAME.registerComponent("world-audio-triggers", {
+        schema: {
+          goatSound: { default: "./audio/goat.mp3" },
+        },
+
+        init: function () {
+          window.storyAudioState = {
+            goatStarted: false,
+            goatFinished: false,
+          };
+
+          this.goatStarted = false;
+          this.goatAudio = new Audio(this.data.goatSound);
+          this.goatAudio.preload = "auto";
+          this.goatAudio.volume = 1;
+          this.goatAudio.load();
+
+          this.tryStartGoatAudio = this.tryStartGoatAudio.bind(this);
+
+          // goat.mp3 starts from mouse/camera movement. This counts as user interaction,
+          // so browsers are much more likely to allow the MP3 to play.
+          document.addEventListener("mousemove", this.tryStartGoatAudio);
+          document.addEventListener("pointermove", this.tryStartGoatAudio);
+
+          this.goatAudio.addEventListener("ended", () => {
+            window.storyAudioState.goatFinished = true;
+            console.log(
+              "goat.mp3 finished. Goat can now start when the player walks.",
+            );
+          });
+        },
+
+        remove: function () {
+          document.removeEventListener("mousemove", this.tryStartGoatAudio);
+          document.removeEventListener("pointermove", this.tryStartGoatAudio);
+        },
+
+        tryStartGoatAudio: function () {
+          if (this.goatStarted) return;
+
+          this.goatStarted = true;
+          window.storyAudioState.goatStarted = true;
+          this.goatAudio.currentTime = 0;
+          this.goatAudio
+            .play()
+            .then(() => {
+              console.log("goat.mp3 is playing from ./audio/goat.mp3");
+            })
+            .catch((error) => {
+              console.warn(
+                "goat.mp3 could not play. Move/click inside the page once, then move the mouse again. Check path ./audio/goat.mp3",
+                error,
+              );
+              this.goatStarted = false;
+              window.storyAudioState.goatStarted = false;
+            });
+        },
+      });
+
+      AFRAME.registerComponent("story-goat", {
+        schema: {
+          rig: { type: "selector" },
+          terrain: { type: "selector" },
+          startDistance: { default: 5.0 },
+          discoveryDistance: { default: 4.2 },
+          speed: { default: 1.45 },
+          targetX: { default: 3.6 },
+          targetZ: { default: 10.4 },
+          introSound: { default: "./audio/intro.mp3" },
+          discoverySound: { default: "./audio/discovery.mp3" },
+          yOffset: { default: 0.18 },
+        },
+
+        init: function () {
+          this.started = false;
+          this.arrived = false;
+          this.discoveryStarted = false;
+          this.celebrating = false;
+          this.celebrationTime = 0;
+          this.baseY = 0;
+          this.baseRotationY = this.el.object3D.rotation.y;
+          this.lastRigPosition = new THREE.Vector3();
+          this.hasRigPosition = false;
+          this.meshes = [];
+          this.raycaster = new THREE.Raycaster();
+          this.down = new THREE.Vector3(0, -1, 0);
+
+          this.introAudio = new Audio(this.data.introSound);
+          this.introAudio.preload = "auto";
+          this.introAudio.volume = 1;
+          this.introAudio.load();
+
+          this.discoveryAudio = new Audio(this.data.discoverySound);
+          this.discoveryAudio.preload = "auto";
+          this.discoveryAudio.volume = 1;
+          this.discoveryAudio.load();
+
+          const collect = () => {
+            const terrainMesh =
+              this.data.terrain && this.data.terrain.getObject3D("mesh");
+            if (!terrainMesh) return;
+            terrainMesh.updateMatrixWorld(true);
+            this.meshes = [];
+            terrainMesh.traverse((node) => {
+              if (node.isMesh) this.meshes.push(node);
+            });
+          };
+
+          if (this.data.terrain && this.data.terrain.getObject3D("mesh")) {
+            collect();
+          } else if (this.data.terrain) {
+            this.data.terrain.addEventListener("model-loaded", collect, {
+              once: true,
+            });
+            this.data.terrain.addEventListener(
+              "terrain-ground-ready",
+              collect,
+              { once: true },
+            );
+          }
+        },
+
+        tick: function (time, delta) {
+          if (!this.data.rig) return;
+
+          const dt = Math.min(delta / 1000, 0.05);
+          const goatPos = this.el.object3D.position;
+          const rigPos = this.data.rig.object3D.position;
+          const target = new THREE.Vector3(
+            this.data.targetX,
+            goatPos.y,
+            this.data.targetZ,
+          );
+
+          if (!this.hasRigPosition) {
+            this.lastRigPosition.copy(rigPos);
+            this.hasRigPosition = true;
+            this.snapToTerrain();
+            return;
+          }
+
+          const playerMoved =
+            rigPos.distanceToSquared(this.lastRigPosition) > 0.00002;
+          const storyAudio = window.storyAudioState || { goatFinished: false };
+
+          // Important story order:
+          // 1. Player moves mouse/camera -> goat.mp3 starts.
+          // 2. Goat waits while goat.mp3 is being told.
+          // 3. After goat.mp3 finishes, the next time the player walks, intro.mp3 starts
+          //    and the guide goat begins walking to the coffee tree.
+          if (!this.started && storyAudio.goatFinished && playerMoved) {
+            this.started = true;
+            this.playSound(this.introAudio, "intro.mp3");
+          }
+
+          if (this.started && !this.arrived) {
+            const direction = new THREE.Vector3(
+              this.data.targetX - goatPos.x,
+              0,
+              this.data.targetZ - goatPos.z,
+            );
+            const remaining = direction.length();
+
+            if (remaining <= 0.12) {
+              this.arrived = true;
+              goatPos.x = this.data.targetX;
+              goatPos.z = this.data.targetZ;
+            } else {
+              direction.normalize();
+              const step = Math.min(remaining, this.data.speed * dt);
+              goatPos.x += direction.x * step;
+              goatPos.z += direction.z * step;
+
+              const yaw = Math.atan2(direction.x, direction.z);
+              this.el.object3D.rotation.y = yaw;
+              this.baseRotationY = yaw;
+            }
+
+            this.snapToTerrain();
+          }
+
+          const playerNearCoffee =
+            rigPos.distanceTo(target) <= this.data.discoveryDistance;
+          const goatNearCoffee = goatPos.distanceTo(target) <= 0.7;
+
+          if (!this.discoveryStarted && playerNearCoffee && goatNearCoffee) {
+            this.discoveryStarted = true;
+            this.celebrating = true;
+            this.celebrationTime = 0;
+            this.snapToTerrain();
+            this.baseY = goatPos.y;
+            this.baseRotationY = this.el.object3D.rotation.y;
+            this.playSound(this.discoveryAudio, "discovery.mp3");
+          }
+
+          if (this.celebrating) {
+            this.celebrationTime += dt;
+            const duration = 3.2;
+            const progress = Math.min(this.celebrationTime / duration, 1);
+
+            // Multiple happy jumps plus a couple of spins. Tiny chaos goat energy.
+            const bounce = Math.abs(Math.sin(progress * Math.PI * 6)) * 0.75;
+            goatPos.y = this.baseY + bounce;
+            this.el.object3D.rotation.y =
+              this.baseRotationY + progress * Math.PI * 4;
+            this.el.object3D.rotation.z =
+              Math.sin(progress * Math.PI * 8) * 0.18;
+
+            if (progress >= 1) {
+              this.celebrating = false;
+              this.el.object3D.rotation.y = this.baseRotationY;
+              this.el.object3D.rotation.z = 0;
+              this.snapToTerrain();
+            }
+          }
+
+          this.lastRigPosition.copy(rigPos);
+        },
+
+        snapToTerrain: function () {
+          if (!this.meshes.length) return;
+
+          const position = this.el.object3D.position;
+          this.raycaster.set(
+            new THREE.Vector3(position.x, position.y + 120, position.z),
+            this.down,
+          );
+          this.raycaster.far = 260;
+          const hits = this.raycaster.intersectObjects(this.meshes, false);
+          if (hits.length) {
+            position.y = hits[0].point.y + this.data.yOffset;
+          }
+        },
+
+        playSound: function (audio, name) {
+          audio.currentTime = 0;
+          audio
+            .play()
+            .then(() => {
+              console.log(name + " is playing from ./audio/" + name);
+            })
+            .catch((error) => {
+              console.warn(
+                name +
+                  " could not play. Check ./audio/" +
+                  name +
+                  " and make sure the page has been clicked/moved first.",
+                error,
+              );
+            });
+        },
+      });
+
+      AFRAME.registerComponent("goat-idle", {
+        schema: {
+          phase: { default: 0 },
+          speed: { default: 0.0012 },
+          swayDegrees: { default: 3 },
+          grazeDegrees: { default: 4 },
+        },
+
+        init: function () {
+          this.baseRotation = new THREE.Euler();
+
+          const rememberBaseRotation = () => {
+            this.baseRotation.copy(this.el.object3D.rotation);
+          };
+
+          if (this.el.getObject3D("mesh")) {
+            rememberBaseRotation();
+          } else {
+            this.el.addEventListener("model-loaded", rememberBaseRotation, {
+              once: true,
+            });
+          }
+        },
+
+        tick: function (time) {
+          const t = time * this.data.speed + this.data.phase;
+          const sway = THREE.MathUtils.degToRad(
+            Math.sin(t) * this.data.swayDegrees,
+          );
+          const graze = THREE.MathUtils.degToRad(
+            Math.sin(t * 1.7) * this.data.grazeDegrees,
+          );
+
+          this.el.object3D.rotation.set(
+            this.baseRotation.x + graze,
+            this.baseRotation.y + sway,
+            this.baseRotation.z,
+          );
+        },
+      });
+    </script>
+
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #87ceeb;
+        font-family: Arial, sans-serif;
+      }
+
+      #loading {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #101810;
+        color: white;
+      }
+
+      #hud {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        z-index: 5;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.62);
+        color: white;
+        font-size: 14px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="loading">Loading terrain...</div>
+    <div id="hud">
+      Move the mouse/camera to start goat.mp3. After the story finishes, walk to
+      guide the goat toward the coffee tree.
+    </div>
+
+    <a-scene
+      id="scene"
+      background="color: #87CEEB"
+      loading-screen="enabled: false"
+      renderer="antialias: true; colorManagement: true; precision: highp; logarithmicDepthBuffer: true"
+      vr-mode-ui="enabled: true"
+      world-audio-triggers="goatSound: ./audio/goat.mp3"
+    >
+      <a-assets timeout="120000">
+        <a-asset-item
+          id="terrainAsset"
+          src="./assets/terrain.glb"
+        ></a-asset-item>
+        <a-asset-item
+          id="houseAsset"
+          src="./assets/Housetexture.glb"
+        ></a-asset-item>
+        <a-asset-item
+          id="coffeeTreeAsset"
+          src="./assets/coffeeTree.glb"
+        ></a-asset-item>
+        <a-asset-item id="goatAsset" src="./assets/goat.glb"></a-asset-item>
+        <a-asset-item id="idleAsset" src="./assets/idle.glb"></a-asset-item>
+        <a-asset-item id="walkAsset" src="./assets/walk.glb"></a-asset-item>
+      </a-assets>
+
+      <a-sky color="#87CEEB"></a-sky>
+
+      <a-light type="ambient" intensity="1"></a-light>
+      <a-light type="directional" position="5 10 5" intensity="1.2"></a-light>
+
+      <a-gltf-model
+        id="terrainModel"
+        src="#terrainAsset"
+        position="0 0 0"
+        rotation="0 0 0"
+        scale="1 1 1"
+        align-terrain-ground="sampleX: 0; sampleZ: 18; desiredY: 0"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="house"
+        src="#houseAsset"
+        position="-8 0 -14"
+        rotation="0 35 0"
+        scale="3.5 3.5 3.5"
+        place-on-terrain="terrain: #terrainModel; maxSnapY: 12; fallbackY: 0"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="coffeeTreeOne"
+        src="#coffeeTreeAsset"
+        position="3 0 11"
+        rotation="0 -25 0"
+        scale="3 3 3"
+        place-on-terrain="terrain: #terrainModel"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="coffeeTreeTwo"
+        src="#coffeeTreeAsset"
+        position="-4 0 9"
+        rotation="0 35 0"
+        scale="2.6 2.6 2.6"
+        place-on-terrain="terrain: #terrainModel"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="goatOne"
+        src="#goatAsset"
+        position="-10.5 0 -11.8"
+        rotation="0 70 0"
+        scale="0.8 0.8 0.8"
+        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
+        goat-idle="phase: 0.2"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="goatTwo"
+        src="#goatAsset"
+        position="-6.5 0 -17.2"
+        rotation="0 -45 0"
+        scale="0.8 0.8 0.8"
+        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
+        goat-idle="phase: 1.6; swayDegrees: 2.4"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="goatCoffeeTree"
+        src="#goatAsset"
+        position="-5.2 0 -13.2"
+        rotation="0 60 0"
+        scale="0.8 0.8 0.8"
+        place-on-terrain="terrain: #terrainModel; yOffset: 0.18"
+        story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: 3.6; targetZ: 10.4; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="goatFour"
+        src="#goatAsset"
+        position="-12.2 0 -15.6"
+        rotation="0 120 0"
+        scale="0.8 0.8 0.8"
+        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
+        goat-idle="phase: 4.1; swayDegrees: 2"
+      ></a-gltf-model>
+
+      <a-gltf-model
+        id="goatFive"
+        src="#goatAsset"
+        position="-4.4 0 -11.6"
+        rotation="0 -110 0"
+        scale="0.8 0.8 0.8"
+        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
+        goat-idle="phase: 5.3; grazeDegrees: 3.5"
+      ></a-gltf-model>
+
+      <a-entity
+        id="rig"
+        position="-6.2 0 -10.8"
+        smooth-explorer-controls
+        terrain-ground-follow="terrain: #terrainModel"
+        player-state-models="idle: #kaldiIdleModel; walk: #kaldiWalkModel"
+      >
+        <a-entity
+          id="kaldiAvatar"
+          position="0 0.18 0"
+          rotation="0 180 0"
+          scale="1 1 1"
+        >
+          <a-gltf-model
+            id="kaldiIdleModel"
+            src="#idleAsset"
+            position="0 0 0"
+            rotation="0 0 0"
+            scale="1 1 1"
+            loop-first-animation
+          ></a-gltf-model>
+
+          <a-gltf-model
+            id="kaldiWalkModel"
+            src="#walkAsset"
+            position="0 0 0"
+            rotation="0 0 0"
+            scale="1 1 1"
+            visible="false"
+            loop-first-animation
+          ></a-gltf-model>
+        </a-entity>
+
+        <a-camera
+          id="playerCamera"
+          position="0 2.7 6"
+          camera="near: 0.01; far: 240; fov: 72"
+          look-controls="enabled: false"
+          wasd-controls="enabled: false"
+        ></a-camera>
+      </a-entity>
+    </a-scene>
+
+    <script>
+      const loading = document.querySelector("#loading");
+      const terrain = document.querySelector("#terrainModel");
+
+      terrain.addEventListener("model-loaded", () => {
+        loading.style.display = "none";
+      });
+    </script>
+  </body>
+</html>
