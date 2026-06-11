@@ -1438,33 +1438,66 @@
       const introOverlay = document.querySelector("#introOverlay");
       const startButton = document.querySelector("#startExperience");
       const loading = document.querySelector("#loading");
-      const terrain = document.querySelector("#terrainModel");
-      let terrainReady = false;
+      const requiredModels = Array.from(
+        document.querySelectorAll("a-gltf-model"),
+      );
+      let loadedModels = 0;
+      let sceneReady = false;
 
-      const markTerrainReady = () => {
-        terrainReady = true;
-        loading.textContent = "Ready to explore";
+      const updateLoadingText = () => {
+        loading.textContent =
+          "Loading 3D models " + loadedModels + "/" + requiredModels.length;
+      };
+
+      const markSceneReady = () => {
+        sceneReady = true;
+        loading.textContent = "Ready to start";
         loading.classList.add("is-ready");
         startButton.disabled = false;
         startButton.textContent = "Start experience";
       };
 
-      if (terrain.getObject3D("mesh")) {
-        markTerrainReady();
-      } else {
-        terrain.addEventListener("model-loaded", markTerrainReady, {
+      const markModelReady = (model) => {
+        if (model.dataset.readyForStart) return;
+        model.dataset.readyForStart = "true";
+        loadedModels += 1;
+
+        if (loadedModels >= requiredModels.length) {
+          markSceneReady();
+        } else {
+          updateLoadingText();
+        }
+      };
+
+      updateLoadingText();
+
+      requiredModels.forEach((model) => {
+        if (model.getObject3D("mesh")) {
+          markModelReady(model);
+          return;
+        }
+
+        model.addEventListener("model-loaded", () => markModelReady(model), {
           once: true,
         });
-      }
+        model.addEventListener("model-error", () => {
+          loading.textContent =
+            "A 3D model failed to load. Check the deployed assets.";
+        });
+      });
 
       window.setTimeout(() => {
-        if (!terrainReady) {
-          loading.textContent = "Loading large 3D models...";
+        if (!sceneReady) {
+          loading.textContent =
+            "Still loading optimized 3D models " +
+            loadedModels +
+            "/" +
+            requiredModels.length;
         }
       }, 12000);
 
       startButton.addEventListener("click", () => {
-        if (!terrainReady) return;
+        if (!sceneReady) return;
 
         document.body.classList.add("experience-started");
         introOverlay.classList.add("is-hidden");
