@@ -100,7 +100,10 @@
           this.forward = new THREE.Vector3();
           this.right = new THREE.Vector3();
           this.input = new THREE.Vector2();
+          this.touchMove = new THREE.Vector2();
           this.camera = document.querySelector("#playerCamera");
+          this.touchPad = document.querySelector("#mobileMovePad");
+          this.touchStick = document.querySelector("#mobileMoveStick");
           this.yaw = 0;
           this.pitch = THREE.MathUtils.degToRad(-12);
           this.dragging = false;
@@ -110,6 +113,9 @@
           this.attachAttempts = 0;
           this.cameraDistance = 6;
           this.pointer = { x: 0, y: 0 };
+          this.touchPointerId = null;
+          this.touchOrigin = { x: 0, y: 0 };
+          this.touchMaxDistance = 46;
 
           this.onKeyDown = (event) => this.keys.add(event.code);
           this.onKeyUp = (event) => this.keys.delete(event.code);
@@ -120,6 +126,9 @@
           this.onWheel = this.onWheel.bind(this);
           this.onPointerLockChange = this.onPointerLockChange.bind(this);
           this.attachInputHandlers = this.attachInputHandlers.bind(this);
+          this.onTouchMoveStart = this.onTouchMoveStart.bind(this);
+          this.onTouchMove = this.onTouchMove.bind(this);
+          this.onTouchMoveEnd = this.onTouchMoveEnd.bind(this);
 
           window.addEventListener("keydown", this.onKeyDown);
           window.addEventListener("keyup", this.onKeyUp);
@@ -141,6 +150,13 @@
           );
           this.el.sceneEl.addEventListener("loaded", this.attachInputHandlers);
           this.attachInputHandlers();
+
+          if (this.touchPad) {
+            this.touchPad.addEventListener("pointerdown", this.onTouchMoveStart);
+            this.touchPad.addEventListener("pointermove", this.onTouchMove);
+            this.touchPad.addEventListener("pointerup", this.onTouchMoveEnd);
+            this.touchPad.addEventListener("pointercancel", this.onTouchMoveEnd);
+          }
         },
 
         remove: function () {
@@ -155,6 +171,15 @@
             "pointerlockchange",
             this.onPointerLockChange,
           );
+          if (this.touchPad) {
+            this.touchPad.removeEventListener("pointerdown", this.onTouchMoveStart);
+            this.touchPad.removeEventListener("pointermove", this.onTouchMove);
+            this.touchPad.removeEventListener("pointerup", this.onTouchMoveEnd);
+            this.touchPad.removeEventListener(
+              "pointercancel",
+              this.onTouchMoveEnd,
+            );
+          }
           this.el.sceneEl.removeEventListener(
             "render-target-loaded",
             this.attachInputHandlers,
@@ -230,7 +255,9 @@
           if (event.button !== undefined && event.button !== 0) return;
           if (
             event.target.closest &&
-            event.target.closest("#hud, #loading, #introOverlay")
+            event.target.closest(
+              "#hud, #loading, #introOverlay, #mobileMoveControls",
+            )
           ) {
             return;
           }
@@ -283,7 +310,9 @@
         onWheel: function (event) {
           if (
             event.target.closest &&
-            event.target.closest("#hud, #loading, #introOverlay")
+            event.target.closest(
+              "#hud, #loading, #introOverlay, #mobileMoveControls",
+            )
           )
             return;
           event.preventDefault();
@@ -315,6 +344,64 @@
           if (!this.pointerLocked) this.dragging = false;
         },
 
+        onTouchMoveStart: function (event) {
+          if (event.pointerType === "mouse") return;
+          event.preventDefault();
+          event.stopPropagation();
+
+          this.touchPointerId = event.pointerId;
+          this.touchOrigin.x = event.clientX;
+          this.touchOrigin.y = event.clientY;
+          if (this.touchPad.setPointerCapture) {
+            this.touchPad.setPointerCapture(event.pointerId);
+          }
+          this.updateTouchMove(event.clientX, event.clientY);
+        },
+
+        onTouchMove: function (event) {
+          if (event.pointerId !== this.touchPointerId) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.updateTouchMove(event.clientX, event.clientY);
+        },
+
+        onTouchMoveEnd: function (event) {
+          if (event.pointerId !== this.touchPointerId) return;
+          event.preventDefault();
+          event.stopPropagation();
+
+          if (this.touchPad.releasePointerCapture) {
+            this.touchPad.releasePointerCapture(event.pointerId);
+          }
+          this.touchPointerId = null;
+          this.touchMove.set(0, 0);
+          this.updateTouchStick(0, 0);
+        },
+
+        updateTouchMove: function (clientX, clientY) {
+          let dx = clientX - this.touchOrigin.x;
+          let dy = clientY - this.touchOrigin.y;
+          const distance = Math.hypot(dx, dy);
+
+          if (distance > this.touchMaxDistance) {
+            const scale = this.touchMaxDistance / distance;
+            dx *= scale;
+            dy *= scale;
+          }
+
+          this.touchMove.set(
+            dx / this.touchMaxDistance,
+            -dy / this.touchMaxDistance,
+          );
+          this.updateTouchStick(dx, dy);
+        },
+
+        updateTouchStick: function (x, y) {
+          if (!this.touchStick) return;
+          this.touchStick.style.setProperty("--stick-x", x.toFixed(1) + "px");
+          this.touchStick.style.setProperty("--stick-y", y.toFixed(1) + "px");
+        },
+
         updateView: function () {
           this.el.object3D.rotation.y = this.yaw;
           if (this.camera) {
@@ -334,6 +421,8 @@
             this.input.x += 1;
           if (this.keys.has("KeyA") || this.keys.has("ArrowLeft"))
             this.input.x -= 1;
+
+          this.input.add(this.touchMove);
 
           if (this.input.lengthSq() > 1) this.input.normalize();
         },
@@ -619,10 +708,11 @@
             const avatar = this.data.avatar.object3D;
             const targetYaw =
               Math.atan2(moveX, moveZ) - this.el.object3D.rotation.y;
-            const turn = THREE.MathUtils.euclideanModulo(
-              targetYaw - avatar.rotation.y + Math.PI,
-              Math.PI * 2,
-            ) - Math.PI;
+            const turn =
+              THREE.MathUtils.euclideanModulo(
+                targetYaw - avatar.rotation.y + Math.PI,
+                Math.PI * 2,
+              ) - Math.PI;
             const deltaSeconds = Math.min((delta || 16) / 1000, 0.05);
             if (!wasWalking) {
               avatar.rotation.y = targetYaw;
@@ -648,17 +738,14 @@
           };
 
           this.goatStarted = false;
+          this.goatStartTimer = null;
           this.goatAudio = new Audio(this.data.goatSound);
           this.goatAudio.preload = "auto";
           this.goatAudio.volume = 1;
           this.goatAudio.load();
 
           this.tryStartGoatAudio = this.tryStartGoatAudio.bind(this);
-
-          // goat.mp3 starts from mouse/camera movement. This counts as user interaction,
-          // so browsers are much more likely to allow the MP3 to play.
-          document.addEventListener("mousemove", this.tryStartGoatAudio);
-          document.addEventListener("pointermove", this.tryStartGoatAudio);
+          this.startAfterDelay = this.startAfterDelay.bind(this);
 
           this.goatAudio.addEventListener("ended", () => {
             window.storyAudioState.goatFinished = true;
@@ -669,8 +756,16 @@
         },
 
         remove: function () {
-          document.removeEventListener("mousemove", this.tryStartGoatAudio);
-          document.removeEventListener("pointermove", this.tryStartGoatAudio);
+          window.clearTimeout(this.goatStartTimer);
+        },
+
+        startAfterDelay: function (delayMs) {
+          if (this.goatStarted || this.goatStartTimer) return;
+
+          this.goatStartTimer = window.setTimeout(() => {
+            this.goatStartTimer = null;
+            this.tryStartGoatAudio();
+          }, delayMs);
         },
 
         tryStartGoatAudio: function () {
@@ -715,8 +810,11 @@
           this.discoveryStarted = false;
           this.celebrating = false;
           this.celebrationTime = 0;
+          this.celebrationDuration = 15;
+          this.celebrationTimer = null;
           this.baseY = 0;
           this.baseRotationY = this.el.object3D.rotation.y;
+          this.celebrationOrigin = new THREE.Vector3();
           this.lastRigPosition = new THREE.Vector3();
           this.hasRigPosition = false;
           this.meshes = [];
@@ -732,6 +830,9 @@
           this.discoveryAudio.preload = "auto";
           this.discoveryAudio.volume = 1;
           this.discoveryAudio.load();
+          this.discoveryAudio.addEventListener("ended", () => {
+            if (this.discoveryStarted) this.finishCelebration();
+          });
 
           const collect = () => {
             const terrainMesh =
@@ -823,36 +924,70 @@
 
           if (!this.discoveryStarted && playerNearCoffee && goatNearCoffee) {
             this.discoveryStarted = true;
-            this.celebrating = true;
-            this.celebrationTime = 0;
             this.snapToTerrain();
-            this.baseY = goatPos.y;
-            this.baseRotationY = this.el.object3D.rotation.y;
-            this.playSound(this.discoveryAudio, "discovery.mp3");
+            this.playSound(this.discoveryAudio, "discovery.mp3").then(
+              (played) => {
+                this.startCelebration();
+                if (!played) {
+                  window.clearTimeout(this.celebrationTimer);
+                  this.celebrationTimer = window.setTimeout(
+                    () => this.finishCelebration(),
+                    this.celebrationDuration * 1000,
+                  );
+                }
+              },
+            );
           }
 
           if (this.celebrating) {
             this.celebrationTime += dt;
-            const duration = 3.2;
-            const progress = Math.min(this.celebrationTime / duration, 1);
+            const progress =
+              (this.celebrationTime % this.celebrationDuration) /
+              this.celebrationDuration;
+            const angle = this.celebrationTime * 2.25;
+            const radius = 0.8 + Math.sin(progress * Math.PI) * 0.7;
 
-            // Multiple happy jumps plus a couple of spins. Tiny chaos goat energy.
-            const bounce = Math.abs(Math.sin(progress * Math.PI * 6)) * 0.75;
+            goatPos.x =
+              this.celebrationOrigin.x + Math.sin(angle) * radius * 0.75;
+            goatPos.z = this.celebrationOrigin.z + Math.cos(angle) * radius;
+            const bounce =
+              Math.abs(Math.sin(this.celebrationTime * Math.PI * 2.1)) * 1.08;
             goatPos.y = this.baseY + bounce;
             this.el.object3D.rotation.y =
-              this.baseRotationY + progress * Math.PI * 4;
+              this.baseRotationY + this.celebrationTime * Math.PI * 1.35;
             this.el.object3D.rotation.z =
-              Math.sin(progress * Math.PI * 8) * 0.18;
-
-            if (progress >= 1) {
-              this.celebrating = false;
-              this.el.object3D.rotation.y = this.baseRotationY;
-              this.el.object3D.rotation.z = 0;
-              this.snapToTerrain();
-            }
+              Math.sin(this.celebrationTime * Math.PI * 2.1) * 0.22;
           }
 
           this.lastRigPosition.copy(rigPos);
+        },
+
+        startCelebration: function () {
+          if (this.celebrating) return;
+
+          this.celebrating = true;
+          this.celebrationTime = 0;
+          this.snapToTerrain();
+          this.celebrationOrigin.copy(this.el.object3D.position);
+          this.baseY = this.el.object3D.position.y;
+          this.baseRotationY = this.el.object3D.rotation.y;
+          window.clearTimeout(this.celebrationTimer);
+          this.celebrationTimer = window.setTimeout(
+            () => this.finishCelebration(),
+            this.celebrationDuration * 1000,
+          );
+        },
+
+        finishCelebration: function () {
+          if (!this.celebrating) return;
+
+          window.clearTimeout(this.celebrationTimer);
+          this.celebrationTimer = null;
+          this.celebrating = false;
+          this.el.object3D.position.copy(this.celebrationOrigin);
+          this.el.object3D.rotation.y = this.baseRotationY;
+          this.el.object3D.rotation.z = 0;
+          this.snapToTerrain();
         },
 
         snapToTerrain: function () {
@@ -872,10 +1007,11 @@
 
         playSound: function (audio, name) {
           audio.currentTime = 0;
-          audio
+          return audio
             .play()
             .then(() => {
               console.log(name + " is playing from ./audio/" + name);
+              return true;
             })
             .catch((error) => {
               console.warn(
@@ -885,6 +1021,7 @@
                   " and make sure the page has been clicked/moved first.",
                 error,
               );
+              return false;
             });
         },
       });
@@ -951,8 +1088,13 @@
         background: var(--deep-green);
         color: var(--cream);
         font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
       }
 
       button {
@@ -1172,6 +1314,50 @@
         transform: translateY(0);
       }
 
+      #mobileMoveControls {
+        position: fixed;
+        left: 16px;
+        bottom: 86px;
+        z-index: 9;
+        display: none;
+        pointer-events: none;
+      }
+
+      #mobileMovePad {
+        position: relative;
+        width: 118px;
+        height: 118px;
+        border: 1px solid rgba(255, 255, 255, 0.32);
+        border-radius: 50%;
+        background: rgba(5, 16, 11, 0.42);
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+          0 16px 34px rgba(0, 0, 0, 0.26);
+        pointer-events: auto;
+        touch-action: none;
+      }
+
+      #mobileMoveStick {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        background: #f4c64f;
+        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+        transform: translate(
+          calc(-50% + var(--stick-x, 0px)),
+          calc(-50% + var(--stick-y, 0px))
+        );
+      }
+
+      @media (hover: none), (pointer: coarse) {
+        body.experience-started #mobileMoveControls {
+          display: block;
+        }
+      }
+
       @media (max-width: 760px) {
         #introOverlay {
           align-items: flex-start;
@@ -1301,6 +1487,11 @@
       Listen to the opening story, then walk with the guide goat toward the
       coffee tree.
     </div>
+    <div id="mobileMoveControls">
+      <div id="mobileMovePad" role="application" aria-label="Move Kaldi">
+        <div id="mobileMoveStick"></div>
+      </div>
+    </div>
     <a-scene
       id="scene"
       background="color: #87CEEB"
@@ -1310,9 +1501,18 @@
       world-audio-triggers="goatSound: ./audio/goat.mp3"
     >
       <a-assets timeout="120000">
-        <a-asset-item id="terrainAsset" src="./assets/terrain.glb"></a-asset-item>
-        <a-asset-item id="houseAsset" src="./assets/Housetexture.glb"></a-asset-item>
-        <a-asset-item id="coffeeTreeAsset" src="./assets/coffeeTree.glb"></a-asset-item>
+        <a-asset-item
+          id="terrainAsset"
+          src="./assets/terrain.glb"
+        ></a-asset-item>
+        <a-asset-item
+          id="houseAsset"
+          src="./assets/Housetexture.glb"
+        ></a-asset-item>
+        <a-asset-item
+          id="coffeeTreeAsset"
+          src="./assets/coffeeTree.glb"
+        ></a-asset-item>
         <a-asset-item id="goatAsset" src="./assets/goat.glb"></a-asset-item>
         <a-asset-item id="idleAsset" src="./assets/idle.glb"></a-asset-item>
         <a-asset-item id="walkAsset" src="./assets/walk.glb"></a-asset-item>
@@ -1353,8 +1553,8 @@
       <a-gltf-model
         id="goatOne"
         src="#goatAsset"
-        position="-10.5 0 -11.8"
-        rotation="0 70 0"
+        position="-13.4 0 -10.4"
+        rotation="0 95 0"
         scale="0.8 0.8 0.8"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
         goat-idle="phase: 0.2"
@@ -1363,8 +1563,8 @@
       <a-gltf-model
         id="goatCoffeeTree"
         src="#goatAsset"
-        position="-5.2 0 -13.2"
-        rotation="0 60 0"
+        position="-3.8 0 -10.4"
+        rotation="0 35 0"
         scale="0.8 0.8 0.8"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.18"
         story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: 3.6; targetZ: 10.4; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
@@ -1504,7 +1704,7 @@
         startButton.blur();
 
         const audioTriggers = scene.components["world-audio-triggers"];
-        if (audioTriggers) audioTriggers.tryStartGoatAudio();
+        if (audioTriggers) audioTriggers.startAfterDelay(2000);
       });
     </script>
   </body>
