@@ -152,10 +152,16 @@
           this.attachInputHandlers();
 
           if (this.touchPad) {
-            this.touchPad.addEventListener("pointerdown", this.onTouchMoveStart);
+            this.touchPad.addEventListener(
+              "pointerdown",
+              this.onTouchMoveStart,
+            );
             this.touchPad.addEventListener("pointermove", this.onTouchMove);
             this.touchPad.addEventListener("pointerup", this.onTouchMoveEnd);
-            this.touchPad.addEventListener("pointercancel", this.onTouchMoveEnd);
+            this.touchPad.addEventListener(
+              "pointercancel",
+              this.onTouchMoveEnd,
+            );
           }
         },
 
@@ -172,7 +178,10 @@
             this.onPointerLockChange,
           );
           if (this.touchPad) {
-            this.touchPad.removeEventListener("pointerdown", this.onTouchMoveStart);
+            this.touchPad.removeEventListener(
+              "pointerdown",
+              this.onTouchMoveStart,
+            );
             this.touchPad.removeEventListener("pointermove", this.onTouchMove);
             this.touchPad.removeEventListener("pointerup", this.onTouchMoveEnd);
             this.touchPad.removeEventListener(
@@ -750,7 +759,7 @@
           this.goatAudio.addEventListener("ended", () => {
             window.storyAudioState.goatFinished = true;
             console.log(
-              "goat.mp3 finished. Goat can now start when the player walks.",
+              "goat.mp3 finished. The guide goat story can start now.",
             );
           });
         },
@@ -797,8 +806,8 @@
           startDistance: { default: 5.0 },
           discoveryDistance: { default: 4.2 },
           speed: { default: 1.45 },
-          targetX: { default: 3.6 },
-          targetZ: { default: 10.4 },
+          targetX: { default: 2.2 },
+          targetZ: { default: 8.8 },
           introSound: { default: "./audio/intro.mp3" },
           discoverySound: { default: "./audio/discovery.mp3" },
           yOffset: { default: 0.18 },
@@ -815,11 +824,13 @@
           this.baseY = 0;
           this.baseRotationY = this.el.object3D.rotation.y;
           this.celebrationOrigin = new THREE.Vector3();
+          this.celebrationAway = new THREE.Vector3();
           this.lastRigPosition = new THREE.Vector3();
           this.hasRigPosition = false;
           this.meshes = [];
           this.raycaster = new THREE.Raycaster();
           this.down = new THREE.Vector3(0, -1, 0);
+          this.hud = document.querySelector("#hud");
 
           this.introAudio = new Audio(this.data.introSound);
           this.introAudio.preload = "auto";
@@ -878,17 +889,16 @@
             return;
           }
 
-          const playerMoved =
-            rigPos.distanceToSquared(this.lastRigPosition) > 0.00002;
           const storyAudio = window.storyAudioState || { goatFinished: false };
 
           // Important story order:
-          // 1. Player moves mouse/camera -> goat.mp3 starts.
+          // 1. Start button -> goat.mp3 starts.
           // 2. Goat waits while goat.mp3 is being told.
-          // 3. After goat.mp3 finishes, the next time the player walks, intro.mp3 starts
+          // 3. When goat.mp3 finishes, intro.mp3 starts immediately
           //    and the guide goat begins walking to the coffee tree.
-          if (!this.started && storyAudio.goatFinished && playerMoved) {
+          if (!this.started && storyAudio.goatFinished) {
             this.started = true;
+            this.setHudText("Follow the goat to the coffee tree.");
             this.playSound(this.introAudio, "intro.mp3");
           }
 
@@ -967,6 +977,7 @@
 
           this.celebrating = true;
           this.celebrationTime = 0;
+          this.moveAwayFromTree();
           this.snapToTerrain();
           this.celebrationOrigin.copy(this.el.object3D.position);
           this.baseY = this.el.object3D.position.y;
@@ -975,6 +986,27 @@
           this.celebrationTimer = window.setTimeout(
             () => this.finishCelebration(),
             this.celebrationDuration * 1000,
+          );
+        },
+
+        moveAwayFromTree: function () {
+          const position = this.el.object3D.position;
+          this.celebrationAway.set(
+            position.x - this.data.targetX,
+            0,
+            position.z - this.data.targetZ,
+          );
+
+          if (this.celebrationAway.lengthSq() < 0.01) {
+            this.celebrationAway.set(-0.8, 0, -0.6);
+          }
+
+          this.celebrationAway.normalize();
+          position.x = this.data.targetX + this.celebrationAway.x * 1.6;
+          position.z = this.data.targetZ + this.celebrationAway.z * 1.6;
+          this.el.object3D.rotation.y = Math.atan2(
+            this.celebrationAway.x,
+            this.celebrationAway.z,
           );
         },
 
@@ -1023,6 +1055,10 @@
               );
               return false;
             });
+        },
+
+        setHudText: function (text) {
+          if (this.hud) this.hud.textContent = text;
         },
       });
 
@@ -1546,11 +1582,11 @@
         src="#coffeeTreeAsset"
         position="3 0 11"
         rotation="0 -25 0"
-        scale="3 3 3"
+        scale="2.2 2.2 2.2"
         place-on-terrain="terrain: #terrainModel"
       ></a-gltf-model>
 
-      <a-gltf-model
+      <!-- <a-gltf-model
         id="goatOne"
         src="#goatAsset"
         position="-13.4 0 -10.4"
@@ -1558,7 +1594,7 @@
         scale="0.8 0.8 0.8"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
         goat-idle="phase: 0.2"
-      ></a-gltf-model>
+      ></a-gltf-model> -->
 
       <a-gltf-model
         id="goatCoffeeTree"
@@ -1567,7 +1603,7 @@
         rotation="0 35 0"
         scale="0.8 0.8 0.8"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.18"
-        story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: 3.6; targetZ: 10.4; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
+        story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: 2.2; targetZ: 8.8; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
       ></a-gltf-model>
 
       <a-gltf-model
