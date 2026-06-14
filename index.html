@@ -117,8 +117,24 @@
           this.touchOrigin = { x: 0, y: 0 };
           this.touchMaxDistance = 46;
 
-          this.onKeyDown = (event) => this.keys.add(event.code);
-          this.onKeyUp = (event) => this.keys.delete(event.code);
+          this.movementKeys = new Set([
+            "KeyW",
+            "KeyA",
+            "KeyS",
+            "KeyD",
+            "ArrowUp",
+            "ArrowLeft",
+            "ArrowDown",
+            "ArrowRight",
+          ]);
+          this.onKeyDown = (event) => {
+            if (this.movementKeys.has(event.code)) event.preventDefault();
+            this.keys.add(event.code);
+          };
+          this.onKeyUp = (event) => {
+            if (this.movementKeys.has(event.code)) event.preventDefault();
+            this.keys.delete(event.code);
+          };
           this.onPointerDown = this.onPointerDown.bind(this);
           this.onPointerMove = this.onPointerMove.bind(this);
           this.onPointerUp = this.onPointerUp.bind(this);
@@ -425,6 +441,101 @@
           this.input.add(this.touchMove);
 
           if (this.input.lengthSq() > 1) this.input.normalize();
+        },
+      });
+
+      AFRAME.registerComponent("house-door-entry-limit", {
+        schema: {
+          centerX: { default: -8 },
+          centerZ: { default: -14 },
+          rotationY: { default: 35 },
+          halfWidth: { default: 2.45 },
+          halfDepth: { default: 3.05 },
+          doorHalfWidth: { default: 0.95 },
+        },
+
+        init: function () {
+          this.previousPosition = new THREE.Vector3();
+          this.previousPosition.copy(this.el.object3D.position);
+          this.rotation = THREE.MathUtils.degToRad(this.data.rotationY);
+          this.isInsideHouse = this.isInside(this.el.object3D.position);
+        },
+
+        tick: function () {
+          const position = this.el.object3D.position;
+          const wasInside = this.isInsideHouse;
+          const isInside = this.isInside(position);
+
+          if (!wasInside && isInside) {
+            if (this.crossedDoor(this.previousPosition, position)) {
+              this.isInsideHouse = true;
+              this.previousPosition.copy(position);
+              return;
+            }
+            this.rejectMove(position);
+            return;
+          }
+
+          if (wasInside && !isInside) {
+            if (this.crossedDoor(this.previousPosition, position)) {
+              this.isInsideHouse = false;
+              this.previousPosition.copy(position);
+              return;
+            }
+            this.rejectMove(position);
+            return;
+          }
+
+          this.previousPosition.copy(position);
+        },
+
+        isInside: function (position) {
+          const local = this.toHouseLocal(position);
+          return (
+            Math.abs(local.x) <= this.data.halfWidth &&
+            local.z >= -this.data.halfDepth &&
+            local.z <= this.data.halfDepth
+          );
+        },
+
+        crossedDoor: function (from, to) {
+          const start = this.toHouseLocal(from);
+          const end = this.toHouseLocal(to);
+          const doorZ = this.data.halfDepth;
+          const travelZ = end.z - start.z;
+
+          if (Math.abs(travelZ) > 0.0001) {
+            const crossing = (doorZ - start.z) / travelZ;
+            if (crossing >= 0 && crossing <= 1) {
+              const xAtDoor = start.x + (end.x - start.x) * crossing;
+              return Math.abs(xAtDoor) <= this.data.doorHalfWidth;
+            }
+          }
+
+          return (
+            Math.abs(end.x) <= this.data.doorHalfWidth &&
+            Math.abs(end.z - doorZ) <= 0.45
+          );
+        },
+
+        toHouseLocal: function (position) {
+          const dx = position.x - this.data.centerX;
+          const dz = position.z - this.data.centerZ;
+          const cos = Math.cos(this.rotation);
+          const sin = Math.sin(this.rotation);
+
+          return {
+            x: dx * cos - dz * sin,
+            z: dx * sin + dz * cos,
+          };
+        },
+
+        rejectMove: function (position) {
+          position.x = this.previousPosition.x;
+          position.z = this.previousPosition.z;
+
+          const controls = this.el.components["smooth-explorer-controls"];
+          if (controls) controls.velocity.set(0, 0, 0);
         },
       });
 
@@ -746,17 +857,46 @@
 
           this.tryStartGoatAudio = this.tryStartGoatAudio.bind(this);
           this.startAfterDelay = this.startAfterDelay.bind(this);
+          this.unlockAudio = this.unlockAudio.bind(this);
 
           this.goatAudio.addEventListener("ended", () => {
             window.storyAudioState.goatFinished = true;
-            console.log(
-              "goat.mp3 finished. Goat can now start when the player walks.",
-            );
+            console.log("goat.mp3 finished. Goat can now start.");
           });
         },
 
         remove: function () {
           window.clearTimeout(this.goatStartTimer);
+        },
+
+        unlockAudio: function () {
+          const previousVolume = this.goatAudio.volume;
+          const previousMuted = this.goatAudio.muted;
+
+          this.goatAudio.muted = true;
+          this.goatAudio.volume = 0;
+          this.goatAudio.currentTime = 0;
+
+          const playPromise = this.goatAudio.play();
+          if (!playPromise) {
+            this.resetUnlockAudio(previousVolume, previousMuted);
+            return;
+          }
+
+          playPromise
+            .then(() => {
+              this.goatAudio.pause();
+              this.goatAudio.currentTime = 0;
+              this.resetUnlockAudio(previousVolume, previousMuted);
+            })
+            .catch(() => {
+              this.resetUnlockAudio(previousVolume, previousMuted);
+            });
+        },
+
+        resetUnlockAudio: function (volume, muted) {
+          this.goatAudio.muted = muted;
+          this.goatAudio.volume = volume;
         },
 
         startAfterDelay: function (delayMs) {
@@ -797,8 +937,8 @@
           startDistance: { default: 5.0 },
           discoveryDistance: { default: 4.2 },
           speed: { default: 1.45 },
-          targetX: { default: 3.6 },
-          targetZ: { default: 10.4 },
+          targetX: { default: -13.0 },
+          targetZ: { default: -8.8 },
           introSound: { default: "./audio/intro.mp3" },
           discoverySound: { default: "./audio/discovery.mp3" },
           yOffset: { default: 0.18 },
@@ -808,11 +948,16 @@
           this.started = false;
           this.arrived = false;
           this.discoveryStarted = false;
+          this.eating = false;
+          this.eatTime = 0;
+          this.eatDuration = 3.2;
+          this.eatTimer = null;
           this.celebrating = false;
           this.celebrationTime = 0;
           this.celebrationDuration = 15;
           this.celebrationTimer = null;
           this.baseY = 0;
+          this.baseRotationX = this.el.object3D.rotation.x;
           this.baseRotationY = this.el.object3D.rotation.y;
           this.celebrationOrigin = new THREE.Vector3();
           this.lastRigPosition = new THREE.Vector3();
@@ -820,6 +965,8 @@
           this.meshes = [];
           this.raycaster = new THREE.Raycaster();
           this.down = new THREE.Vector3(0, -1, 0);
+          this.hud = document.querySelector("#hud");
+          this.retryAudioTap = null;
 
           this.introAudio = new Audio(this.data.introSound);
           this.introAudio.preload = "auto";
@@ -878,17 +1025,18 @@
             return;
           }
 
-          const playerMoved =
-            rigPos.distanceToSquared(this.lastRigPosition) > 0.00002;
           const storyAudio = window.storyAudioState || { goatFinished: false };
 
           // Important story order:
-          // 1. Player moves mouse/camera -> goat.mp3 starts.
+          // 1. Start button -> goat.mp3 starts.
           // 2. Goat waits while goat.mp3 is being told.
-          // 3. After goat.mp3 finishes, the next time the player walks, intro.mp3 starts
+          // 3. When goat.mp3 finishes, intro.mp3 starts immediately
           //    and the guide goat begins walking to the coffee tree.
-          if (!this.started && storyAudio.goatFinished && playerMoved) {
+          if (!this.started && storyAudio.goatFinished) {
             this.started = true;
+            this.setHudText(
+              "The guide goat is moving. Use W/A/S/D, arrow keys, or the mobile joystick to move Kaldi after it.",
+            );
             this.playSound(this.introAudio, "intro.mp3");
           }
 
@@ -925,38 +1073,38 @@
           if (!this.discoveryStarted && playerNearCoffee && goatNearCoffee) {
             this.discoveryStarted = true;
             this.snapToTerrain();
-            this.playSound(this.discoveryAudio, "discovery.mp3").then(
-              (played) => {
-                this.startCelebration();
-                if (!played) {
-                  window.clearTimeout(this.celebrationTimer);
-                  this.celebrationTimer = window.setTimeout(
-                    () => this.finishCelebration(),
-                    this.celebrationDuration * 1000,
-                  );
-                }
-              },
+            this.setHudText(
+              "The goat tastes the coffee leaves, then moves away to play.",
             );
+            this.startEating();
+            this.playSound(this.discoveryAudio, "discovery.mp3");
+          }
+
+          if (this.eating) {
+            this.eatTime += dt;
+            const chew = Math.sin(this.eatTime * Math.PI * 2.1);
+            this.el.object3D.rotation.x =
+              this.baseRotationX - 0.18 + chew * 0.06;
+            this.el.object3D.rotation.z = chew * 0.04;
+            this.snapToTerrain();
           }
 
           if (this.celebrating) {
             this.celebrationTime += dt;
-            const progress =
-              (this.celebrationTime % this.celebrationDuration) /
-              this.celebrationDuration;
-            const angle = this.celebrationTime * 2.25;
-            const radius = 0.8 + Math.sin(progress * Math.PI) * 0.7;
+            const angle = this.celebrationTime * 2.8;
+            const hop =
+              Math.abs(Math.sin(this.celebrationTime * Math.PI * 2.4)) * 0.52;
 
             goatPos.x =
-              this.celebrationOrigin.x + Math.sin(angle) * radius * 0.75;
-            goatPos.z = this.celebrationOrigin.z + Math.cos(angle) * radius;
-            const bounce =
-              Math.abs(Math.sin(this.celebrationTime * Math.PI * 2.1)) * 1.08;
-            goatPos.y = this.baseY + bounce;
+              this.celebrationOrigin.x + Math.sin(angle) * 0.26;
+            goatPos.z =
+              this.celebrationOrigin.z + Math.cos(angle * 0.8) * 0.22;
+            goatPos.y = this.baseY + hop;
+            this.el.object3D.rotation.x = this.baseRotationX;
             this.el.object3D.rotation.y =
-              this.baseRotationY + this.celebrationTime * Math.PI * 1.35;
+              this.baseRotationY + Math.sin(this.celebrationTime * 4.2) * 0.45;
             this.el.object3D.rotation.z =
-              Math.sin(this.celebrationTime * Math.PI * 2.1) * 0.22;
+              Math.sin(this.celebrationTime * Math.PI * 2.4) * 0.12;
           }
 
           this.lastRigPosition.copy(rigPos);
@@ -965,8 +1113,13 @@
         startCelebration: function () {
           if (this.celebrating) return;
 
+          this.eating = false;
           this.celebrating = true;
           this.celebrationTime = 0;
+          this.el.object3D.position.x = this.data.targetX - 0.4;
+          this.el.object3D.position.z = this.data.targetZ - 1.6;
+          this.el.object3D.rotation.x = this.baseRotationX;
+          this.el.object3D.rotation.z = 0;
           this.snapToTerrain();
           this.celebrationOrigin.copy(this.el.object3D.position);
           this.baseY = this.el.object3D.position.y;
@@ -978,13 +1131,37 @@
           );
         },
 
-        finishCelebration: function () {
-          if (!this.celebrating) return;
+        startEating: function () {
+          this.eating = true;
+          this.eatTime = 0;
+          this.baseRotationX = this.el.object3D.rotation.x;
+          this.baseRotationY = this.el.object3D.rotation.y;
+          window.clearTimeout(this.eatTimer);
+          this.eatTimer = window.setTimeout(
+            () => this.startCelebration(),
+            this.eatDuration * 1000,
+          );
+        },
 
+        finishCelebration: function () {
+          if (!this.celebrating && !this.eating) return;
+
+          window.clearTimeout(this.eatTimer);
+          this.eatTimer = null;
           window.clearTimeout(this.celebrationTimer);
           this.celebrationTimer = null;
+          if (this.eating && !this.celebrating) {
+            this.eating = false;
+            this.el.object3D.rotation.x = this.baseRotationX;
+            this.el.object3D.rotation.y = this.baseRotationY;
+            this.el.object3D.rotation.z = 0;
+            this.snapToTerrain();
+            return;
+          }
+          this.eating = false;
           this.celebrating = false;
           this.el.object3D.position.copy(this.celebrationOrigin);
+          this.el.object3D.rotation.x = this.baseRotationX;
           this.el.object3D.rotation.y = this.baseRotationY;
           this.el.object3D.rotation.z = 0;
           this.snapToTerrain();
@@ -1021,8 +1198,68 @@
                   " and make sure the page has been clicked/moved first.",
                 error,
               );
+              this.queueAudioRetry(audio, name);
               return false;
             });
+        },
+
+        setHudText: function (text) {
+          if (this.hud) this.hud.textContent = text;
+        },
+
+        unlockAudio: function () {
+          this.unlockAudioElement(this.introAudio, "intro.mp3");
+          this.unlockAudioElement(this.discoveryAudio, "discovery.mp3");
+        },
+
+        unlockAudioElement: function (audio, name) {
+          if (!audio || audio._coffeeUnlocked) return;
+
+          const previousVolume = audio.volume;
+          const previousMuted = audio.muted;
+          audio.muted = true;
+          audio.volume = 0;
+          audio.currentTime = 0;
+
+          const playPromise = audio.play();
+          if (!playPromise) {
+            this.resetUnlockedAudio(audio, previousVolume, previousMuted);
+            audio._coffeeUnlocked = true;
+            return;
+          }
+
+          playPromise
+            .then(() => {
+              audio.pause();
+              audio.currentTime = 0;
+              this.resetUnlockedAudio(audio, previousVolume, previousMuted);
+              audio._coffeeUnlocked = true;
+            })
+            .catch((error) => {
+              this.resetUnlockedAudio(audio, previousVolume, previousMuted);
+              console.warn(name + " could not be unlocked yet.", error);
+            });
+        },
+
+        resetUnlockedAudio: function (audio, volume, muted) {
+          audio.muted = muted;
+          audio.volume = volume;
+        },
+
+        queueAudioRetry: function (audio, name) {
+          if (this.retryAudioTap || !this.hud) return;
+
+          this.hud.textContent = "Tap the screen once to hear the story audio.";
+          this.retryAudioTap = () => {
+            this.retryAudioTap = null;
+            audio.currentTime = 0;
+            audio.play().catch((error) => {
+              console.warn(name + " still could not play on tap.", error);
+            });
+          };
+          document.addEventListener("pointerdown", this.retryAudioTap, {
+            once: true,
+          });
         },
       });
 
@@ -1429,7 +1666,7 @@
           <p id="introDescription" class="intro-copy">
             Step into a hillside coffee farm and follow a short story inspired
             by Kaldi, the curious goats, and the discovery of coffee. Listen to
-            the narration, explore the terrain, and guide the goat toward the
+            the narration, then move Kaldi after the guide goat toward the
             coffee tree.
           </p>
           <div class="intro-actions">
@@ -1449,34 +1686,34 @@
             </li>
             <li>
               <span class="step-number">2</span>
-              <span>Look around the farm and find the guide goat.</span>
+              <span>When the first audio finishes, the guide goat starts walking.</span>
             </li>
             <li>
               <span class="step-number">3</span>
-              <span>Walk with the goat toward the coffee tree.</span>
+              <span>Use W/A/S/D, the arrow keys, or the mobile joystick to move Kaldi after the goat.</span>
             </li>
             <li>
               <span class="step-number">4</span>
-              <span>Reach the tree to hear the discovery moment.</span>
+              <span>Reach the coffee tree with the goat to hear the discovery moment.</span>
             </li>
           </ol>
 
           <div class="intro-controls" aria-label="Controls">
             <div class="control-chip">
               <strong>Look</strong>
-              <span>Move the mouse or drag on touch.</span>
+              <span>Move the mouse or drag to turn the view.</span>
             </div>
             <div class="control-chip">
-              <strong>Walk</strong>
-              <span>Use W A S D or the arrow keys.</span>
+              <strong>Move Kaldi</strong>
+              <span>W/up forward, S/down back, A/D or left/right sideways.</span>
             </div>
             <div class="control-chip">
               <strong>Zoom</strong>
               <span>Scroll to move the camera closer.</span>
             </div>
             <div class="control-chip">
-              <strong>VR</strong>
-              <span>Use the VR button when your headset is ready.</span>
+              <strong>Mobile</strong>
+              <span>Use the joystick at the bottom left to walk.</span>
             </div>
           </div>
         </aside>
@@ -1484,8 +1721,8 @@
     </div>
 
     <div id="hud">
-      Listen to the opening story, then walk with the guide goat toward the
-      coffee tree.
+      Listen first. When the guide goat starts walking, use W/A/S/D, arrow keys,
+      or the mobile joystick to move Kaldi after it.
     </div>
     <div id="mobileMoveControls">
       <div id="mobileMovePad" role="application" aria-label="Move Kaldi">
@@ -1544,20 +1781,10 @@
       <a-gltf-model
         id="coffeeTreeOne"
         src="#coffeeTreeAsset"
-        position="3 0 11"
+        position="-13.8 0 -8.4"
         rotation="0 -25 0"
-        scale="3 3 3"
+        scale="1.6 1.6 1.6"
         place-on-terrain="terrain: #terrainModel"
-      ></a-gltf-model>
-
-      <a-gltf-model
-        id="goatOne"
-        src="#goatAsset"
-        position="-13.4 0 -10.4"
-        rotation="0 95 0"
-        scale="0.8 0.8 0.8"
-        place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
-        goat-idle="phase: 0.2"
       ></a-gltf-model>
 
       <a-gltf-model
@@ -1565,9 +1792,9 @@
         src="#goatAsset"
         position="-3.8 0 -10.4"
         rotation="0 35 0"
-        scale="0.8 0.8 0.8"
+        scale="0.45 0.45 0.45"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.18"
-        story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: 3.6; targetZ: 10.4; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
+        story-goat="rig: #rig; terrain: #terrainModel; startDistance: 5; discoveryDistance: 4.2; speed: 1.45; targetX: -13.0; targetZ: -8.8; introSound: ./audio/intro.mp3; discoverySound: ./audio/discovery.mp3; yOffset: 0.18"
       ></a-gltf-model>
 
       <a-gltf-model
@@ -1575,7 +1802,7 @@
         src="#goatAsset"
         position="-12.2 0 -15.6"
         rotation="0 120 0"
-        scale="0.8 0.8 0.8"
+        scale="0.45 0.45 0.45"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
         goat-idle="phase: 4.1; swayDegrees: 2"
       ></a-gltf-model>
@@ -1585,7 +1812,7 @@
         src="#goatAsset"
         position="-4.4 0 -11.6"
         rotation="0 -110 0"
-        scale="0.8 0.8 0.8"
+        scale="0.45 0.45 0.45"
         place-on-terrain="terrain: #terrainModel; yOffset: 0.02"
         goat-idle="phase: 5.3; grazeDegrees: 3.5"
       ></a-gltf-model>
@@ -1594,6 +1821,7 @@
         id="rig"
         position="-6.2 0 -10.8"
         smooth-explorer-controls
+        house-door-entry-limit
         terrain-ground-follow="terrain: #terrainModel"
         player-state-models="idle: #kaldiIdleModel; walk: #kaldiWalkModel; avatar: #kaldiAvatar"
       >
@@ -1704,7 +1932,14 @@
         startButton.blur();
 
         const audioTriggers = scene.components["world-audio-triggers"];
-        if (audioTriggers) audioTriggers.startAfterDelay(2000);
+        if (audioTriggers) {
+          audioTriggers.unlockAudio();
+          audioTriggers.startAfterDelay(2000);
+        }
+
+        const storyGoat = document.querySelector("#goatCoffeeTree");
+        const storyGoatComponent = storyGoat && storyGoat.components["story-goat"];
+        if (storyGoatComponent) storyGoatComponent.unlockAudio();
       });
     </script>
   </body>
